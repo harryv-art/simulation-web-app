@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script compares read access behavior for:
+# This script compares access behavior for:
 # 1) OIDC exchange token (/access/api/v1/oidc/token)
 # 2) Admin-issued token (/access/api/v1/tokens) with same username/scope
 
 required_vars=(
   JF_URL
   OIDC_EXCHANGE_TOKEN
-  NPM_TEST_URL
+  TARGET_DENY_URL
 )
 
 for v in "${required_vars[@]}"; do
@@ -21,10 +21,32 @@ done
 timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo "[INFO] UTC timestamp: ${timestamp}"
 
-oidc_code="$(curl -sS -o /tmp/oidc-verify.bin -w '%{http_code}' \
+if [ -n "${TARGET_ALLOW_URL:-}" ]; then
+  oidc_allow_code="$(curl -sS -o /tmp/oidc-allow.bin -w '%{http_code}' \
+    -H "Authorization: Bearer ${OIDC_EXCHANGE_TOKEN}" \
+    "${TARGET_ALLOW_URL}")"
+  echo "[RESULT] OIDC token ALLOW URL status: ${oidc_allow_code}"
+fi
+
+if [ -n "${TARGET_WRITE_URL:-}" ]; then
+  oidc_write_code="$(curl -sS -o /tmp/oidc-write.out -w '%{http_code}' \
+    -X PUT \
+    -H "Authorization: Bearer ${OIDC_EXCHANGE_TOKEN}" \
+    -H "Content-Type: text/plain" \
+    --data "oidc-write-test ${timestamp}" \
+    "${TARGET_WRITE_URL}")"
+  echo "[RESULT] OIDC token WRITE URL status: ${oidc_write_code}"
+
+  oidc_read_back_code="$(curl -sS -o /tmp/oidc-read-back.bin -w '%{http_code}' \
+    -H "Authorization: Bearer ${OIDC_EXCHANGE_TOKEN}" \
+    "${TARGET_WRITE_URL}")"
+  echo "[RESULT] OIDC token READ-BACK URL status: ${oidc_read_back_code}"
+fi
+
+oidc_deny_code="$(curl -sS -o /tmp/oidc-deny.bin -w '%{http_code}' \
   -H "Authorization: Bearer ${OIDC_EXCHANGE_TOKEN}" \
-  "${NPM_TEST_URL}")"
-echo "[RESULT] OIDC exchange token fetch status: ${oidc_code}"
+  "${TARGET_DENY_URL}")"
+echo "[RESULT] OIDC token DENY URL status: ${oidc_deny_code}"
 
 if [ -n "${JF_ADMIN_TOKEN:-}" ]; then
   admin_resp="$(curl -sS -X POST "${JF_URL}/access/api/v1/tokens" \
@@ -40,10 +62,27 @@ if [ -n "${JF_ADMIN_TOKEN:-}" ]; then
     exit 1
   fi
 
-  admin_code="$(curl -sS -o /tmp/admin-verify.bin -w '%{http_code}' \
+  if [ -n "${TARGET_ALLOW_URL:-}" ]; then
+    admin_allow_code="$(curl -sS -o /tmp/admin-allow.bin -w '%{http_code}' \
+      -H "Authorization: Bearer ${admin_token}" \
+      "${TARGET_ALLOW_URL}")"
+    echo "[RESULT] Admin token ALLOW URL status: ${admin_allow_code}"
+  fi
+
+  if [ -n "${TARGET_WRITE_URL:-}" ]; then
+    admin_write_code="$(curl -sS -o /tmp/admin-write.out -w '%{http_code}' \
+      -X PUT \
+      -H "Authorization: Bearer ${admin_token}" \
+      -H "Content-Type: text/plain" \
+      --data "admin-write-test ${timestamp}" \
+      "${TARGET_WRITE_URL}")"
+    echo "[RESULT] Admin token WRITE URL status: ${admin_write_code}"
+  fi
+
+  admin_deny_code="$(curl -sS -o /tmp/admin-deny.bin -w '%{http_code}' \
     -H "Authorization: Bearer ${admin_token}" \
-    "${NPM_TEST_URL}")"
-  echo "[RESULT] Admin-issued token fetch status: ${admin_code}"
+    "${TARGET_DENY_URL}")"
+  echo "[RESULT] Admin token DENY URL status: ${admin_deny_code}"
 fi
 
 echo "[DONE] Verification complete"

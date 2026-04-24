@@ -10,6 +10,10 @@ permissions:
 jobs:
   reproduce:
     runs-on: ubuntu-latest
+    env:
+      TARGET_ALLOW_URL: https://harryv1.jfrog.io/artifactory/api/storage/generic-local
+      TARGET_WRITE_URL: https://harryv1.jfrog.io/artifactory/generic-local/oidc-test/probe.txt
+      TARGET_DENY_URL: https://harryv1.jfrog.io/artifactory/api/storage/harryv-npm-remote
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,18 +67,72 @@ jobs:
           echo "access_token=$access_token" >> "$GITHUB_OUTPUT"
           echo "OIDC exchange token acquired"
 
-      - name: Test npm-internal fetch with OIDC exchange token
+      - name: Decode and print OIDC exchange token claims
         env:
-          NPM_TEST_URL: ${{ secrets.NPM_TEST_URL }}
           OIDC_ACCESS_TOKEN: ${{ steps.jf-oidc-token.outputs.access_token }}
         run: |
           set -euo pipefail
-          code="$(curl -sS -o /tmp/oidc-fetch.bin -w '%{http_code}' \
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+
+          token = os.environ["OIDC_ACCESS_TOKEN"]
+          parts = token.split(".")
+          if len(parts) < 2:
+              raise SystemExit("Token is not JWT-like; cannot decode payload")
+
+          payload = parts[1]
+          payload += "=" * (-len(payload) % 4)
+          decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
+          data = json.loads(decoded)
+
+          interesting = {
+              "iss": data.get("iss"),
+              "sub": data.get("sub"),
+              "aud": data.get("aud"),
+              "scp": data.get("scp"),
+              "exp": data.get("exp"),
+              "iat": data.get("iat"),
+          }
+          print("Decoded JFrog token claims:")
+          print(json.dumps(interesting, indent=2))
+          PY
+
+      - name: Validate OIDC token against allow/deny URLs
+        env:
+          OIDC_ACCESS_TOKEN: ${{ steps.jf-oidc-token.outputs.access_token }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${TARGET_ALLOW_URL:-}" ]; then
+            allow_code="$(curl -sS -o /tmp/oidc-allow.bin -w '%{http_code}' \
+              -H "Authorization: Bearer ${OIDC_ACCESS_TOKEN}" \
+              "${TARGET_ALLOW_URL}")"
+            echo "OIDC token ALLOW URL status: ${allow_code}"
+          fi
+
+          if [ -n "${TARGET_WRITE_URL:-}" ]; then
+            write_code="$(curl -sS -o /tmp/oidc-write.out -w '%{http_code}' \
+              -X PUT \
+              -H "Authorization: Bearer ${OIDC_ACCESS_TOKEN}" \
+              -H "Content-Type: text/plain" \
+              --data "oidc-write-test $(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+              "${TARGET_WRITE_URL}")"
+            echo "OIDC token WRITE URL status: ${write_code}"
+
+            read_back_code="$(curl -sS -o /tmp/oidc-read-back.bin -w '%{http_code}' \
+              -H "Authorization: Bearer ${OIDC_ACCESS_TOKEN}" \
+              "${TARGET_WRITE_URL}")"
+            echo "OIDC token READ-BACK URL status: ${read_back_code}"
+          fi
+
+          deny_code="$(curl -sS -o /tmp/oidc-deny.bin -w '%{http_code}' \
             -H "Authorization: Bearer ${OIDC_ACCESS_TOKEN}" \
-            "${NPM_TEST_URL}")"
-          echo "OIDC token fetch HTTP status: ${code}"
-          if [ "$code" -eq 200 ]; then
-            echo "OIDC token can read npm-internal artifact (potential anomaly)"
+            "${TARGET_DENY_URL}")"
+          echo "OIDC token DENY URL status: ${deny_code}"
+          if [ "${deny_code}" -eq 200 ]; then
+            echo "Anomaly: OIDC token can access DENY target"
           fi
 
       - name: Optional admin token control test
@@ -82,7 +140,6 @@ jobs:
         env:
           JF_URL: ${{ secrets.JF_URL }}
           JF_ADMIN_TOKEN: ${{ secrets.JF_ADMIN_TOKEN }}
-          NPM_TEST_URL: ${{ secrets.NPM_TEST_URL }}
         run: |
           set -euo pipefail
           admin_resp="$(curl -sS -X POST "${JF_URL}/access/api/v1/tokens" \
@@ -98,7 +155,25 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$admin_token"
-          code="$(curl -sS -o /tmp/admin-fetch.bin -w '%{http_code}' \
+
+          if [ -n "${TARGET_ALLOW_URL:-}" ]; then
+            allow_code="$(curl -sS -o /tmp/admin-allow.bin -w '%{http_code}' \
+              -H "Authorization: Bearer ${admin_token}" \
+              "${TARGET_ALLOW_URL}")"
+            echo "Admin token ALLOW URL status: ${allow_code}"
+          fi
+
+          if [ -n "${TARGET_WRITE_URL:-}" ]; then
+            write_code="$(curl -sS -o /tmp/admin-write.out -w '%{http_code}' \
+              -X PUT \
+              -H "Authorization: Bearer ${admin_token}" \
+              -H "Content-Type: text/plain" \
+              --data "admin-write-test $(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+              "${TARGET_WRITE_URL}")"
+            echo "Admin token WRITE URL status: ${write_code}"
+          fi
+
+          deny_code="$(curl -sS -o /tmp/admin-deny.bin -w '%{http_code}' \
             -H "Authorization: Bearer ${admin_token}" \
-            "${NPM_TEST_URL}")"
-          echo "Admin-issued token fetch HTTP status: ${code}"
+            "${TARGET_DENY_URL}")"
+          echo "Admin token DENY URL status: ${deny_code}"
