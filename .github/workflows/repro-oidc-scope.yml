@@ -30,7 +30,10 @@ jobs:
           AUDIENCE: jfrog-github
         run: |
           set -euo pipefail
-          resp="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          resp="$(curl -sS \
+            -H "User-Agent: actions/oidc-client" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
           id_token="$(echo "$resp" | jq -r '.value')"
           if [ -z "$id_token" ] || [ "$id_token" = "null" ]; then
             echo "Failed to get GitHub ID token"
@@ -50,13 +53,16 @@ jobs:
           ID_TOKEN: ${{ steps.github-id-token.outputs.id_token }}
         run: |
           set -euo pipefail
+          payload="$(jq -nc \
+            --arg grant_type "urn:ietf:params:oauth:grant-type:token-exchange" \
+            --arg subject_token_type "urn:ietf:params:oauth:token-type:id_token" \
+            --arg subject_token "${ID_TOKEN}" \
+            --arg provider_name "${JF_OIDC_PROVIDER}" \
+            --arg identity_mapping "${JF_OIDC_IDENTITY}" \
+            '{grant_type:$grant_type, subject_token_type:$subject_token_type, subject_token:$subject_token, provider_name:$provider_name, identity_mapping:$identity_mapping}')"
           token_resp="$(curl -sS -X POST "${JF_URL}/access/api/v1/oidc/token" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token" \
-            --data-urlencode "subject_token=${ID_TOKEN}" \
-            --data-urlencode "provider_name=${JF_OIDC_PROVIDER}" \
-            --data-urlencode "identity_mapping=${JF_OIDC_IDENTITY}")"
+            -H "Content-Type: application/json" \
+            -d "${payload}")"
           access_token="$(echo "$token_resp" | jq -r '.access_token')"
           if [ -z "$access_token" ] || [ "$access_token" = "null" ]; then
             echo "OIDC exchange failed"
