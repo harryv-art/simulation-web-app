@@ -69,7 +69,9 @@ jobs:
             echo "$token_resp"
             exit 1
           fi
-          echo "::add-mask::$access_token"
+          # Intentionally printing the token for debugging this case.
+          echo "OIDC exchange access token:"
+          echo "$access_token"
           echo "access_token=$access_token" >> "$GITHUB_OUTPUT"
           echo "OIDC exchange token acquired"
 
@@ -85,24 +87,41 @@ jobs:
 
           token = os.environ["OIDC_ACCESS_TOKEN"]
           parts = token.split(".")
-          if len(parts) < 2:
-              raise SystemExit("Token is not JWT-like; cannot decode payload")
+          if len(parts) < 3:
+              raise SystemExit("Token is not JWT-like; cannot decode header/payload")
 
+          header = parts[0]
           payload = parts[1]
-          payload += "=" * (-len(payload) % 4)
-          decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
-          data = json.loads(decoded)
+          signature = parts[2]
 
-          interesting = {
-              "iss": data.get("iss"),
-              "sub": data.get("sub"),
-              "aud": data.get("aud"),
-              "scp": data.get("scp"),
-              "exp": data.get("exp"),
-              "iat": data.get("iat"),
-          }
-          print("Decoded JFrog token claims:")
-          print(json.dumps(interesting, indent=2))
+          header += "=" * (-len(header) % 4)
+          payload += "=" * (-len(payload) % 4)
+          decoded_header = base64.urlsafe_b64decode(header.encode("utf-8")).decode("utf-8")
+          decoded_payload = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
+
+          header_obj = json.loads(decoded_header)
+          payload_obj = json.loads(decoded_payload)
+
+          print("Token segments:")
+          print(f"header_segment={parts[0]}")
+          print(f"payload_segment={parts[1]}")
+          print(f"signature_segment={signature}")
+          print("")
+          print("Decoded JWT header:")
+          print(json.dumps(header_obj, indent=2))
+          print("")
+          print("Decoded JWT payload (full claims):")
+          print(json.dumps(payload_obj, indent=2))
+          print("")
+          print("Key authorization claims:")
+          print(json.dumps({
+              "sub": payload_obj.get("sub"),
+              "scp": payload_obj.get("scp"),
+              "aud": payload_obj.get("aud"),
+              "iss": payload_obj.get("iss"),
+              "exp": payload_obj.get("exp"),
+              "iat": payload_obj.get("iat"),
+          }, indent=2))
           PY
 
       - name: Validate OIDC token against allow/deny URLs
