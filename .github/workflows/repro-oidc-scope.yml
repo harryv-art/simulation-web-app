@@ -136,12 +136,16 @@ jobs:
           fi
 
       - name: Optional admin token control test
-        if: ${{ secrets.JF_ADMIN_TOKEN != '' }}
         env:
           JF_URL: ${{ secrets.JF_URL }}
           JF_ADMIN_TOKEN: ${{ secrets.JF_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "${JF_ADMIN_TOKEN:-}" ]; then
+            echo "Skipping admin token control test (JF_ADMIN_TOKEN not set)"
+            exit 0
+          fi
+
           admin_resp="$(curl -sS -X POST "${JF_URL}/access/api/v1/tokens" \
             -H "Authorization: Bearer ${JF_ADMIN_TOKEN}" \
             -H "Content-Type: application/x-www-form-urlencoded" \
