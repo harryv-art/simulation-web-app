@@ -1,0 +1,104 @@
+name: Reproduce OIDC Scope Enforcement
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show run metadata
+        run: |
+          echo "Repo: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Run UTC: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+      - name: Request GitHub OIDC ID token
+        id: github-id-token
+        env:
+          AUDIENCE: jfrog-github
+        run: |
+          set -euo pipefail
+          resp="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          id_token="$(echo "$resp" | jq -r '.value')"
+          if [ -z "$id_token" ] || [ "$id_token" = "null" ]; then
+            echo "Failed to get GitHub ID token"
+            echo "$resp"
+            exit 1
+          fi
+          echo "::add-mask::$id_token"
+          echo "id_token=$id_token" >> "$GITHUB_OUTPUT"
+          echo "GitHub OIDC ID token acquired"
+
+      - name: Exchange GitHub ID token for JFrog access token
+        id: jf-oidc-token
+        env:
+          JF_URL: ${{ secrets.JF_URL }}
+          JF_OIDC_PROVIDER: ${{ secrets.JF_OIDC_PROVIDER }}
+          JF_OIDC_IDENTITY: ${{ secrets.JF_OIDC_IDENTITY }}
+          ID_TOKEN: ${{ steps.github-id-token.outputs.id_token }}
+        run: |
+          set -euo pipefail
+          token_resp="$(curl -sS -X POST "${JF_URL}/access/api/v1/oidc/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token" \
+            --data-urlencode "subject_token=${ID_TOKEN}" \
+            --data-urlencode "provider_name=${JF_OIDC_PROVIDER}" \
+            --data-urlencode "identity_mapping=${JF_OIDC_IDENTITY}")"
+          access_token="$(echo "$token_resp" | jq -r '.access_token')"
+          if [ -z "$access_token" ] || [ "$access_token" = "null" ]; then
+            echo "OIDC exchange failed"
+            echo "$token_resp"
+            exit 1
+          fi
+          echo "::add-mask::$access_token"
+          echo "access_token=$access_token" >> "$GITHUB_OUTPUT"
+          echo "OIDC exchange token acquired"
+
+      - name: Test npm-internal fetch with OIDC exchange token
+        env:
+          NPM_TEST_URL: ${{ secrets.NPM_TEST_URL }}
+          OIDC_ACCESS_TOKEN: ${{ steps.jf-oidc-token.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/oidc-fetch.bin -w '%{http_code}' \
+            -H "Authorization: Bearer ${OIDC_ACCESS_TOKEN}" \
+            "${NPM_TEST_URL}")"
+          echo "OIDC token fetch HTTP status: ${code}"
+          if [ "$code" -eq 200 ]; then
+            echo "OIDC token can read npm-internal artifact (potential anomaly)"
+          fi
+
+      - name: Optional admin token control test
+        if: ${{ secrets.JF_ADMIN_TOKEN != '' }}
+        env:
+          JF_URL: ${{ secrets.JF_URL }}
+          JF_ADMIN_TOKEN: ${{ secrets.JF_ADMIN_TOKEN }}
+          NPM_TEST_URL: ${{ secrets.NPM_TEST_URL }}
+        run: |
+          set -euo pipefail
+          admin_resp="$(curl -sS -X POST "${JF_URL}/access/api/v1/tokens" \
+            -H "Authorization: Bearer ${JF_ADMIN_TOKEN}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "username=github-simulation-web-app" \
+            --data-urlencode "scope=applied-permissions/groups:github-repo-simulation-web-app" \
+            --data-urlencode "expires_in=3600")"
+          admin_token="$(echo "$admin_resp" | jq -r '.access_token')"
+          if [ -z "$admin_token" ] || [ "$admin_token" = "null" ]; then
+            echo "Admin token creation failed"
+            echo "$admin_resp"
+            exit 1
+          fi
+          echo "::add-mask::$admin_token"
+          code="$(curl -sS -o /tmp/admin-fetch.bin -w '%{http_code}' \
+            -H "Authorization: Bearer ${admin_token}" \
+            "${NPM_TEST_URL}")"
+          echo "Admin-issued token fetch HTTP status: ${code}"

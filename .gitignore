@@ -1,0 +1,10 @@
+# Case artifact - do not commit
+411863Salesforce.pdf
+
+# macOS
+.DS_Store
+
+# Local temp/output artifacts
+*.log
+*.tmp
+tmp/
