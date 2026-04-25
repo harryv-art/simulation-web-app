@@ -124,6 +124,20 @@ jobs:
           }, indent=2))
           PY
 
+      - name: Save raw token to file (debug only)
+        env:
+          OIDC_ACCESS_TOKEN: ${{ steps.jf-oidc-token.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${OIDC_ACCESS_TOKEN}" > /tmp/jfrog_oidc_access_token.txt
+
+      - name: Upload raw token artifact (debug only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfrog-oidc-token-raw
+          path: /tmp/jfrog_oidc_access_token.txt
+          retention-days: 1
+
       - name: Validate OIDC token against allow/deny URLs
         env:
           OIDC_ACCESS_TOKEN: ${{ steps.jf-oidc-token.outputs.access_token }}
